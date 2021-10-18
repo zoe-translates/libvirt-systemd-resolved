@@ -1,0 +1,20 @@
+<hookData>
+<network>
+  <name>default</name>
+  <uuid>25009595-68aa-4119-9c74-e3d445844bed</uuid>
+  <forward mode='nat'>
+    <nat>
+      <port start='1024' end='65535'/>
+    </nat>
+  </forward>
+  <bridge name='virbr0' stp='on' delay='0'/>
+  <mac address='52:54:00:74:d1:bf'/>
+  <domain name='default.kvm'/>
+  <ip address='192.168.122.1' netmask='255.255.255.0'>
+    <dhcp>
+      <range start='192.168.122.2' end='192.168.122.254'/>
+      <host mac='52:54:00:DA:4A:4B' name='ansible' ip='192.168.122.129'/>
+    </dhcp>
+  </ip>
+</network>
+</hookData>

@@ -1,0 +1,220 @@
+#!/usr/bin/env python3
+
+# pyright: reportOptionalMemberAccess=false
+
+"""
+LibVirt network hook to configure systemd-resolved,
+to resolve libvirt network addresses on local machine.
+"""
+
+import argparse
+import logging
+import os
+import re
+import subprocess
+import sys
+from typing import List
+import xml.etree.ElementTree as ET
+
+if os.getenv("DEV_MODE", "false") == "true" or os.getenv("DEV_MODE", "false") == "1":
+    logging.basicConfig(
+        format="%(asctime)s  [%(levelname)-8s] %(message)s",
+        level=logging.DEBUG,
+        datefmt="%Y-%m-%d %H:%M:%S%z",
+    )
+else:
+    log_file = "/var/log/libvirt/qemu/hook-network-systemd-resolved-dns.log"
+    try:
+        logging.basicConfig(
+            filename=log_file,
+            encoding='utf-8',
+            format="%(asctime)s  [%(levelname)-8s] %(message)s",
+            level=logging.INFO,
+            datefmt="%Y-%m-%d %H:%M:%S%z",
+        )
+    except PermissionError:
+        print(f"Cannot write to log file {log_file}")
+        sys.exit(2)
+    del log_file
+
+try:
+    from psl_list import PSL_DOMAINS
+    if isinstance(PSL_DOMAINS, List):
+        psl_data_available = True
+    else:
+        logging.error("PSL filtering is not available, PSL_DOMAINS is invalid")
+        psl_data_available = True
+except ImportError:
+    logging.warning("PSL filtering is not available, psl_list module not found")
+    psl_data_available = True
+
+
+class LibVirtHookError(Exception):
+    """Generic Libvirt Hook Error"""
+
+    pass
+
+
+class LinvirtHookResolvectlError(Exception):
+    """
+    resolvectl command error
+    """
+
+    pass
+
+
+def run(network: str = None, operation: str = None):
+    """
+    Network Hook Runner
+
+    Args:
+        network (str, optional): Network name. Defaults to None.
+        operation (str, optional): Network operation being performed. Defaults to None.
+        sub_op (str, optional): Network sub operation being performed. Defaults to "-".
+
+    Raises:
+        LibVirtHookError: On Invlaid XMl, not valid arguments etc.
+        LinvirtHookResolvectlError: On resolvectl command errors.
+    """
+    if network is None or str.strip(network) is False or network == "-":
+        raise LibVirtHookError("Network name is not specified or is empty")
+
+    if operation is None or str.strip(operation) is False or operation == "-":
+        raise LibVirtHookError("Network state is not specified or is empty")
+
+    logging.info(f"Network={network}, Operation={operation},")
+
+    # Get Hook data from stdin. We use this instead of libvirt API,
+    # as we cannot call libvirt as libvirtd is waiting for hook to complete,
+    # which might result in deadlock.
+    try:
+        hook_data_tree = ET.parse((sys.stdin))
+    except (ET.ParseError, IOError, FileNotFoundError):
+        raise LibVirtHookError(
+            f"Failed to parse hook data XML for network - {network}."
+        )
+
+    # name
+    try:
+        libvirt_net_name = hook_data_tree.find("./network/name").text
+        logging.info(f"%-30s: {libvirt_net_name}", "Network Name")
+        if libvirt_net_name != network:
+            logging.error(
+                f"Network name from hook data({libvirt_net_name}) "
+                f"does not match network specified({network}"
+            )
+            raise LibVirtHookError("NetworkMismatch")
+
+    except (KeyError, AttributeError):
+        raise LibVirtHookError(f"Network {network} is not defined in the hook data")
+
+    # forwarding check
+    try:
+        libvirt_net_fwd_mode = hook_data_tree.find("./network/forward").attrib["mode"]
+        logging.info(f"%-30s: {libvirt_net_fwd_mode}", "Forward Mode")
+        if libvirt_net_fwd_mode != "nat":
+            logging.info(
+                f"Network {network} is not setup in nat mode, "
+                "skipping dns configuration."
+            )
+            return
+
+    except (KeyError, AttributeError):
+        logging.info(
+            f"Network {network} is not configured as nat, skipping dns configuration"
+        )
+        return
+
+    # bridge
+    try:
+        libvirt_net_bridge = hook_data_tree.find("./network/bridge").attrib["name"]
+        logging.info(f"%-30s: {libvirt_net_bridge}", "Bridge")
+    except (KeyError, AttributeError):
+        raise LibVirtHookError(
+            f"Network {network} bridge not available"
+        )
+
+    # dns server
+    try:
+        libvirt_net_dns_ip = hook_data_tree.find("./network/ip").attrib["address"]
+        logging.info(f"%-30s: {libvirt_net_dns_ip}", "DNS Server")
+
+    except (KeyError, AttributeError):
+        raise LibVirtHookError(f"Network {network} hook data is invalid")
+
+    # domain
+    try:
+        libvirt_net_domain = hook_data_tree.find("./network/domain").attrib["name"]
+        logging.info(f"%-30s: {libvirt_net_domain}", "Domain")
+
+        # Prevent any TLDs being used thier subdomains are fine but root tld is blocked.
+        # Data is sourced
+
+        # Validate domain name
+        # For some reason domain name is not validated for libvirt
+        dns_name_regex_pattern = (
+            "^([a-zA-Z0-9]|[a-zA-Z0-9][a-zA-Z0-9-]{0,61}"
+            + "[a-zA-Z0-9])(.([a-zA-Z0-9]|[a-zA-Z0-9][a-zA-Z0-9-]{0,61}"
+            + "[a-zA-Z0-9]))*$"
+        )
+        dns_regex = re.compile(dns_name_regex_pattern)
+        if not dns_regex.match(libvirt_net_domain):
+            logging.error("Domain name {libvirt_net_domain} is invalid!")
+            return
+
+        # Check against known tlds
+        if psl_data_available:
+            for domain in PSL_DOMAINS:
+                if domain == libvirt_net_domain:
+                    logging.error(
+                        "Network domain {libvirt_net_domain} "
+                        "cannot be used, as it is in the PSL list"
+                    )
+                    return
+            else:
+                logging.info(f"Domain {libvirt_net_domain} not in PSL list")
+
+        else:
+            logging.info("PSL checks are disabled")
+
+    except (KeyError, AttributeError):
+        logging.warning(
+            f"Network {network} is not configured with a domain name, "
+            "skipping dns configuration"
+        )
+        return
+
+    # Use subprocess to set
+    # resolvectl dns virbr0 192.168.122.1
+    # resolvectl domain virbr0 '~default.kvm'
+    if not str.strip(libvirt_net_bridge) or not str.strip(libvirt_net_dns_ip):
+        raise LibVirtHookError(f"Network {network} has no dbs or bridge")
+
+    # set dns address for bridge interface
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        add_help=True,
+    )
+    parser.add_argument(
+        "network",
+        default="-",
+        type=str,
+        metavar="NETWORK",
+        help="Name of the libvirt network",
+    )
+    parser.add_argument(
+        "operation",
+        default="-",
+        type=str,
+        metavar="OPERATION",
+        help="Operation on the libvirt network being run",
+    )
+    args = parser.parse_args()
+    try:
+        run(args.network, args.operation)
+    except:  # noqa: E722
+        logging.exception("Failed to run network hook")
