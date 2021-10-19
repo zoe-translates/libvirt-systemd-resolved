@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-# pyright: reportOptionalMemberAccess=false
+# pyright: reportOptionalMemberAccess=false, pythonPlatform=All
 
 """
 LibVirt network hook to configure systemd-resolved,
@@ -9,44 +9,14 @@ to resolve libvirt network addresses on local machine.
 
 import argparse
 import logging
-import os
+import ipaddress
 import re
 import subprocess
 import sys
-from typing import List
+from shutil import which
 import xml.etree.ElementTree as ET
 
-if os.getenv("DEV_MODE", "false") == "true" or os.getenv("DEV_MODE", "false") == "1":
-    logging.basicConfig(
-        format="%(asctime)s  [%(levelname)-8s] %(message)s",
-        level=logging.DEBUG,
-        datefmt="%Y-%m-%d %H:%M:%S%z",
-    )
-else:
-    log_file = "/var/log/libvirt/qemu/hook-network-systemd-resolved-dns.log"
-    try:
-        logging.basicConfig(
-            filename=log_file,
-            encoding='utf-8',
-            format="%(asctime)s  [%(levelname)-8s] %(message)s",
-            level=logging.INFO,
-            datefmt="%Y-%m-%d %H:%M:%S%z",
-        )
-    except PermissionError:
-        print(f"Cannot write to log file {log_file}")
-        sys.exit(2)
-    del log_file
-
-try:
-    from psl_list import PSL_DOMAINS
-    if isinstance(PSL_DOMAINS, List):
-        psl_data_available = True
-    else:
-        logging.error("PSL filtering is not available, PSL_DOMAINS is invalid")
-        psl_data_available = True
-except ImportError:
-    logging.warning("PSL filtering is not available, psl_list module not found")
-    psl_data_available = True
+# HOOK_LOGFILE = Path("/var/log/libvirt/qemu/hook-network-systemd-resolved-dns.log")
 
 
 class LibVirtHookError(Exception):
@@ -55,7 +25,7 @@ class LibVirtHookError(Exception):
     pass
 
 
-class LinvirtHookResolvectlError(Exception):
+class LibVirtHookResolvectlError(Exception):
     """
     resolvectl command error
     """
@@ -63,7 +33,80 @@ class LinvirtHookResolvectlError(Exception):
     pass
 
 
-def run(network: str = None, operation: str = None):
+logging.basicConfig(
+    format="%(asctime)s  [%(levelname)-8s] %(message)s",
+    level=logging.INFO,
+    datefmt="%Y-%m-%d %H:%M:%S%z",
+)
+
+
+# TODO: Check if using dbus API is better instead of subprocess call
+def run_resolvectl_hook(subcommand: str, interface: str, value: str):
+    """Run resolvectl commands
+
+    Args:
+        subcommand (str): resolvectl subcommand
+        interface (str): interface name
+        value (str): value
+
+    Raises:
+        ValueError: Invalid arguments
+        LibVirtHookResolvectlError: Generic exception when resolvectl command fails
+    """
+    if not isinstance(subcommand, str) or subcommand == "":
+        raise ValueError("resolvectl subcommand must be a non empty string")
+
+    if not isinstance(interface, str) or interface == "":
+        raise ValueError("resolvectl interface must be a on empty string")
+
+    if not isinstance(value, str):
+        raise ValueError("resolvectl set-value must be of type string")
+
+    logging.info(
+        f"Resolvectl subcommand={subcommand} interface={interface}, value={value}"
+    )
+
+    resolvctl_path = which("resolvectl")
+    if resolvctl_path is None:
+        raise LibVirtHookResolvectlError(
+            "resolvectl not found, are you using systemd-resolved as your resolver?"
+        )
+
+    try:
+        proc = subprocess.Popen(
+            args=["resolvectl", subcommand, interface, value],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            stdin=None,
+        )
+        try:
+            outs, errs = proc.communicate(timeout=5)
+            if proc.returncode != 0:
+                raise LibVirtHookResolvectlError(
+                    f"resolvectl errored out with returncode={proc.returncode} "
+                    f"stdout={str(outs)}, stderr={str(errs)}"
+                )
+            else:
+                logging.info(
+                    f"resolvectl completed with returncode={proc.returncode} "
+                    f"stdout={str(outs)}, stderr={str(errs)}"
+                )
+                return None
+
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            outs, errs = proc.communicate()
+
+            raise LibVirtHookResolvectlError(
+                f"resolvectl timed out with returncode={proc.returncode} "
+                f"stdout={str(outs)}, stderr={str(errs)}"
+            )
+
+    except (subprocess.CalledProcessError) as e:
+        raise LibVirtHookResolvectlError(f"resolvectl process failed with {str(e)}")
+
+
+def run(network: str = None, operation: str = None, sub_op: str = "-"):
     """
     Network Hook Runner
 
@@ -74,7 +117,7 @@ def run(network: str = None, operation: str = None):
 
     Raises:
         LibVirtHookError: On Invlaid XMl, not valid arguments etc.
-        LinvirtHookResolvectlError: On resolvectl command errors.
+        LibVirtHookResolvectlError: On resolvectl command errors.
     """
     if network is None or str.strip(network) is False or network == "-":
         raise LibVirtHookError("Network name is not specified or is empty")
@@ -82,7 +125,7 @@ def run(network: str = None, operation: str = None):
     if operation is None or str.strip(operation) is False or operation == "-":
         raise LibVirtHookError("Network state is not specified or is empty")
 
-    logging.info(f"Network={network}, Operation={operation},")
+    logging.info(f"Network={network}, Operation={operation}, SubOperation={sub_op}")
 
     # Get Hook data from stdin. We use this instead of libvirt API,
     # as we cannot call libvirt as libvirtd is waiting for hook to complete,
@@ -103,7 +146,7 @@ def run(network: str = None, operation: str = None):
                 f"Network name from hook data({libvirt_net_name}) "
                 f"does not match network specified({network}"
             )
-            raise LibVirtHookError("NetworkMismatch")
+            raise LibVirtHookError("NetworkNameMismatch")
 
     except (KeyError, AttributeError):
         raise LibVirtHookError(f"Network {network} is not defined in the hook data")
@@ -127,17 +170,22 @@ def run(network: str = None, operation: str = None):
 
     # bridge
     try:
-        libvirt_net_bridge = hook_data_tree.find("./network/bridge").attrib["name"]
-        logging.info(f"%-30s: {libvirt_net_bridge}", "Bridge")
+        libvirt_net_bridge_interface = hook_data_tree.find("./network/bridge").attrib[
+            "name"
+        ]
+        logging.info(f"%-30s: {libvirt_net_bridge_interface}", "Bridge")
     except (KeyError, AttributeError):
-        raise LibVirtHookError(
-            f"Network {network} bridge not available"
-        )
+        raise LibVirtHookError(f"Network {network} bridge not available")
 
     # dns server
     try:
-        libvirt_net_dns_ip = hook_data_tree.find("./network/ip").attrib["address"]
-        logging.info(f"%-30s: {libvirt_net_dns_ip}", "DNS Server")
+        libvirt_net_gw_ip = hook_data_tree.find("./network/ip").attrib["address"]
+        logging.info(f"%-30s: {libvirt_net_gw_ip}", "DNS Server IP")
+
+        if ipaddress.ip_address(libvirt_net_gw_ip).version != 4:
+            logging.error(f"No IPV4 network defined for {network}?")
+            logging.error(f"Failed to parse IP4={libvirt_net_gw_ip}")
+            return
 
     except (KeyError, AttributeError):
         raise LibVirtHookError(f"Network {network} hook data is invalid")
@@ -162,10 +210,22 @@ def run(network: str = None, operation: str = None):
             logging.error("Domain name {libvirt_net_domain} is invalid!")
             return
 
-        # Check against known tlds
-        if psl_data_available:
+        # Check against known tlds via ps_list
+        try:
+            from psldata import PSL_DOMAINS
+
             for domain in PSL_DOMAINS:
-                if domain == libvirt_net_domain:
+                if domain.startswith("*."):
+                    if re.match(
+                        pattern=f"^(.*).{domain.split(sep='.', maxsplit=1)[1]}$",
+                        string=libvirt_net_domain,
+                    ):
+                        logging.error(
+                            "Network domain {libvirt_net_domain} "
+                            "cannot be used, as it matches patten in the PSL list"
+                        )
+                        return
+                elif domain == libvirt_net_domain:
                     logging.error(
                         "Network domain {libvirt_net_domain} "
                         "cannot be used, as it is in the PSL list"
@@ -174,8 +234,8 @@ def run(network: str = None, operation: str = None):
             else:
                 logging.info(f"Domain {libvirt_net_domain} not in PSL list")
 
-        else:
-            logging.info("PSL checks are disabled")
+        except ImportError:
+            logging.warning("PSL filtering is not available, PSL checks are disabled")
 
     except (KeyError, AttributeError):
         logging.warning(
@@ -184,13 +244,49 @@ def run(network: str = None, operation: str = None):
         )
         return
 
-    # Use subprocess to set
-    # resolvectl dns virbr0 192.168.122.1
-    # resolvectl domain virbr0 '~default.kvm'
-    if not str.strip(libvirt_net_bridge) or not str.strip(libvirt_net_dns_ip):
-        raise LibVirtHookError(f"Network {network} has no dbs or bridge")
+    if not str.strip(libvirt_net_bridge_interface) or not str.strip(libvirt_net_gw_ip):
+        raise LibVirtHookError(f"Network {network} has no dns or bridge")
 
-    # set dns address for bridge interface
+    # Setup
+    # TODO: Check with upstream and check if it can be setup automatically
+    # TODO: Check why domain name is not validated in libvirt
+    if operation == "started" or operation == "updated":
+        logging.info(
+            f"Setting DNS={libvirt_net_gw_ip} on "
+            f"Interface={libvirt_net_bridge_interface}"
+        )
+        try:
+            run_resolvectl_hook(
+                subcommand="dns",
+                interface=libvirt_net_bridge_interface,
+                value=libvirt_net_gw_ip,
+            )
+        except (LibVirtHookResolvectlError, ValueError) as e:
+            logging.error(str(e))
+            logging.error(
+                f"Failed to set DNS={libvirt_net_gw_ip} "
+                f"on Interface={libvirt_net_bridge_interface}"
+            )
+
+        logging.info(
+            f"Set RoutingDomain=~{libvirt_net_domain} "
+            f"on Interface={libvirt_net_bridge_interface}"
+        )
+        try:
+            run_resolvectl_hook(
+                subcommand="domain",
+                interface=libvirt_net_bridge_interface,
+                value=f"~{libvirt_net_domain}",
+            )
+        except (LibVirtHookResolvectlError, ValueError) as e:
+            logging.error(str(e))
+            logging.error(
+                f"Failed to set RoutingDomain=~{libvirt_net_domain} "
+                f"on Interface={libvirt_net_bridge_interface}"
+            )
+    else:
+        logging.info(f"Unsupported operation {operation}")
+        return
 
 
 if __name__ == "__main__":
@@ -207,14 +303,29 @@ if __name__ == "__main__":
         help="Name of the libvirt network",
     )
     parser.add_argument(
-        "operation",
+        "op",
         default="-",
         type=str,
         metavar="OPERATION",
         help="Operation on the libvirt network being run",
     )
+    parser.add_argument(
+        "sub_op",
+        default="-",
+        type=str,
+        metavar="SUB_OPERATION",
+        help="Sub-operation on the libvirt network being run",
+    )
+    parser.add_argument(
+        "extra_arg",
+        default="-",
+        type=str,
+        metavar="EXTRA_ARG",
+        help="EXTRA_ARG",
+    )
     args = parser.parse_args()
     try:
-        run(args.network, args.operation)
-    except:  # noqa: E722
-        logging.exception("Failed to run network hook")
+        run(args.network, args.op, args.sub_op)
+    except LibVirtHookError as e:
+        logging.error(f"NetHook failed with - {str(e)}")
+        sys.exit(1)

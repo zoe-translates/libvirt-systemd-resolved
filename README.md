@@ -49,5 +49,6 @@ Simply copy the script to `/etc/libvirt/hooks/network.d/`
 ## PSL
 
 ```sh
-curl -sSfL https://publicsuffix.org/list/public_suffix_list.dat | sed -e '/^*./d;/^[[:space:]]*$/d;/^\\/\\/*/d' > psl.domans.txt
+curl -sSfLO https://publicsuffix.org/list/public_suffix_list.dat --output data/public_suffix_list.dat
+cat data/public_suffix_list.dat | sed -e '/^*./d;/^[[:space:]]*$/d;/^\\/\\/*/d;/^\!/d;s/^/    \'/;s/$/\',/' | sed -e '1s/^/PSL_DOMAINS = [\n/;$a]' > psl_list.py
 ```
