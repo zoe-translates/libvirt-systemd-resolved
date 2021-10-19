@@ -14,7 +14,7 @@ you can use `systemd-resolved` with libvirt hooks to add per link configs.
 This is mostly the case with Ubuntu 20.04 and Debian 10.
 - You will need libvirt up and running.
 - You **MUST** set Domain property in the network configuration. Please note that changes in network config requires network to be destroyed and redefined.
-![libvirt-domain-ui](./docs/static/img/libvirt-network-ui.png)
+![libvirt-network-ui](./docs/img/libvirt-network-ui.png)
 - If using xml, `<domain name="$DOMAIN_NAME"/>` must be used. Example xml for default network,
 with domain `default.kvm` is shown below.
   ```xml
@@ -40,15 +40,19 @@ with domain `default.kvm` is shown below.
 
 ## Installation
 
-Simply copy the script to `/etc/libvirt/hooks/network.d/`
+```sh
+sudo make install
+```
 
 ## Development
 
 - Sample XMLs used as hook data can be found under fixtures directory.
 
-## PSL
+## PSL Blocking
+
+Known public suffixes are blocked from being configured as routing domains in `systemd-resolved`
 
 ```sh
 curl -sSfLO https://publicsuffix.org/list/public_suffix_list.dat --output data/public_suffix_list.dat
-cat data/public_suffix_list.dat | sed -e '/^*./d;/^[[:space:]]*$/d;/^\\/\\/*/d;/^\!/d;s/^/    \'/;s/$/\',/' | sed -e '1s/^/PSL_DOMAINS = [\n/;$a]' > psl_list.py
+cat data/public_suffix_list.dat | sed -e '/^*./d;/^[[:space:]]*$/d;/^\\/\\/*/d;/^\!/d;s/^/    \'/;s/$/\',/' | sed -e '1s/^/PSL_DOMAINS = [\n/;$a]' > psldata.py
 ```
