@@ -13,4 +13,4 @@ install: ### Install hooks (Requires Root)
 	@echo "Installing Hooks"
 	@if [[ ! -e /etc/libvirt/hooks/network.d ]]; then mkdir /etc/libvirt/hooks/network.d; fi
 	install -g root -o root -m 644 psldata.py /etc/libvirt/hooks/network.d/psldata.py
-	install -g root -o root -m 755 systemd-resolved-dns /etc/libvirt/hooks/network.d/psldata.pysystemd-resolved-dns
+	install -g root -o root -m 755 systemd-resolved-dns /etc/libvirt/hooks/network.d/systemd-resolved-dns
