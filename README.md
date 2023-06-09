@@ -4,19 +4,13 @@
 
 Libvirt hooks for setting up DNS with systemd resolved.
 
-- libvirt uses a separate instance of dnsmasq for each virtual network.
-- So if you want full name and reverse lookup for KVM guests on the host,
-you can use `systemd-resolved` with libvirt hooks to add per link configs.
-
 ## Requirements
 
+- Requires Python3
 - This obviously requires that you use `systemd-resolved` and not other dns resolvers locally.
-This is mostly the case with Ubuntu 20.04 and Debian 10.
+This is mostly the case with Ubuntu 20.04, Fedora 34+ and Debian 10.
 - You will need libvirt up and running.
-- You **MUST** set Domain property in the network configuration. Please note that changes in network config requires network to be destroyed and redefined.
-![libvirt-network-ui](./docs/img/libvirt-network-ui.png)
-- If using xml, `<domain name="$DOMAIN_NAME"/>` must be used. Example xml for default network,
-with domain `default.kvm` is shown below.
+- `<domain name="$DOMAIN_NAME"/>` **MUST** be defined. Example xml for default network, with domain `default.kvm` is shown below.
   ```xml
   <network>
     <name>default</name>
@@ -38,21 +32,44 @@ with domain `default.kvm` is shown below.
   </network>
   ```
 
+> Please note that changes in network configuration requires network to be destroyed and redefined.
+
 ## Installation
 
-```sh
+Installing is simple as placing hook in `/etc/libvirt/hooks/network.d` and ensure that it is executable.
+
+```bash
 sudo make install
 ```
 
-## Development
+## Verification
 
-- Sample XMLs used as hook data can be found under fixtures directory.
+`resolvectl` should show you per link domains
 
-## PSL Blocking
-
-Known public suffixes are blocked from being configured as routing domains in `systemd-resolved`
-
-```sh
-curl -sSfLO https://publicsuffix.org/list/public_suffix_list.dat --output data/public_suffix_list.dat
-cat data/public_suffix_list.dat | sed -e '/^*./d;/^[[:space:]]*$/d;/^\\/\\/*/d;/^\!/d;s/^/    \'/;s/$/\',/' | sed -e '1s/^/PSL_DOMAINS = [\n/;$a]' > psldata.py
+```bash
+resolvectl --no-pager domain
 ```
+
+## Disallowing Public Suffixes
+
+- Known public suffixes are disallowed from being configured as routing domains
+- This is achieved via public suffix list at `/usr/share/publicsuffix/public_suffix_list.dat` This is already installed on most Desktop and server systems.
+
+## Dependencies
+
+- If using Debian, Ubuntu, Linux Mint, Pop!_OS, Raspbian or other debian derivatives,
+    ```bash
+    apt-get install publicsuffix
+    ```
+- If using Fedora, CentOS, RHEL, Amazon Linux 2022
+    ```bash
+    dnf install publicsuffix-list
+    ```
+- If using ArchLinux, Manjaro or other Arch derivatives,
+    ```bash
+    pacman -S publicsuffix-list
+    ```
+- If using OpenSUSE,
+    ```bash
+    zypper install publicsuffix
+    ```

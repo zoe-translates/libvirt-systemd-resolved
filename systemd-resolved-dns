@@ -11,8 +11,10 @@ import argparse
 import logging
 import ipaddress
 import re
+import os
 import subprocess
 import sys
+from pathlib import Path
 from shutil import which
 import xml.etree.ElementTree as ET
 
@@ -32,12 +34,18 @@ class LibVirtHookResolvectlError(Exception):
 
     pass
 
-
-logging.basicConfig(
-    format="%(asctime)s  [%(levelname)-8s] %(message)s",
-    level=logging.INFO,
-    datefmt="%Y-%m-%d %H:%M:%S%z",
-)
+if os.getenv("DEBUG", 0) == "1":
+    logging.basicConfig(
+        format="%(asctime)s  [%(levelname)-8s] %(message)s",
+        level=logging.DEBUG,
+        datefmt="%Y-%m-%d %H:%M:%S%z",
+    )
+else:
+    logging.basicConfig(
+        format="%(asctime)s  [%(levelname)-8s] %(message)s",
+        level=logging.INFO,
+        datefmt="%Y-%m-%d %H:%M:%S%z",
+    )
 
 
 # TODO: Check if using dbus API is better instead of subprocess call
@@ -103,7 +111,9 @@ def run_resolvectl_hook(subcommand: str, interface: str, value: str):
             )
 
     except (subprocess.CalledProcessError) as e:
-        raise LibVirtHookResolvectlError(f"resolvectl process failed with {str(e)}")
+        raise LibVirtHookResolvectlError(
+            f"resolvectl process failed with {str(e)}"
+        )
 
 
 def run(network: str = None, operation: str = None, sub_op: str = "-"):
@@ -125,7 +135,9 @@ def run(network: str = None, operation: str = None, sub_op: str = "-"):
     if operation is None or str.strip(operation) is False or operation == "-":
         raise LibVirtHookError("Network state is not specified or is empty")
 
-    logging.info(f"Network={network}, Operation={operation}, SubOperation={sub_op}")
+    logging.info(
+        f"Network={network}, Operation={operation}, SubOperation={sub_op}"
+    )
 
     # Get Hook data from stdin. We use this instead of libvirt API,
     # as we cannot call libvirt as libvirtd is waiting for hook to complete,
@@ -149,11 +161,15 @@ def run(network: str = None, operation: str = None, sub_op: str = "-"):
             raise LibVirtHookError("NetworkNameMismatch")
 
     except (KeyError, AttributeError):
-        raise LibVirtHookError(f"Network {network} is not defined in the hook data")
+        raise LibVirtHookError(
+            f"Network {network} is not defined in the hook data"
+        )
 
     # forwarding check
     try:
-        libvirt_net_fwd_mode = hook_data_tree.find("./network/forward").attrib["mode"]
+        libvirt_net_fwd_mode = hook_data_tree.find("./network/forward").attrib[
+            "mode"
+        ]
         logging.info(f"%-30s: {libvirt_net_fwd_mode}", "Forward Mode")
         if libvirt_net_fwd_mode != "nat":
             logging.info(
@@ -170,16 +186,18 @@ def run(network: str = None, operation: str = None, sub_op: str = "-"):
 
     # bridge
     try:
-        libvirt_net_bridge_interface = hook_data_tree.find("./network/bridge").attrib[
-            "name"
-        ]
+        libvirt_net_bridge_interface = hook_data_tree.find(
+            "./network/bridge"
+        ).attrib["name"]
         logging.info(f"%-30s: {libvirt_net_bridge_interface}", "Bridge")
     except (KeyError, AttributeError):
         raise LibVirtHookError(f"Network {network} bridge not available")
 
     # dns server
     try:
-        libvirt_net_gw_ip = hook_data_tree.find("./network/ip").attrib["address"]
+        libvirt_net_gw_ip = hook_data_tree.find("./network/ip").attrib[
+            "address"
+        ]
         logging.info(f"%-30s: {libvirt_net_gw_ip}", "DNS Server IP")
 
         if ipaddress.ip_address(libvirt_net_gw_ip).version != 4:
@@ -192,7 +210,9 @@ def run(network: str = None, operation: str = None, sub_op: str = "-"):
 
     # domain
     try:
-        libvirt_net_domain = hook_data_tree.find("./network/domain").attrib["name"]
+        libvirt_net_domain = hook_data_tree.find("./network/domain").attrib[
+            "name"
+        ]
         logging.info(f"%-30s: {libvirt_net_domain}", "Domain")
 
         # Prevent any TLDs being used thier subdomains are fine but root tld is blocked.
@@ -210,32 +230,50 @@ def run(network: str = None, operation: str = None, sub_op: str = "-"):
             logging.error("Domain name {libvirt_net_domain} is invalid!")
             return
 
-        # Check against known tlds via ps_list
-        try:
-            from psldata import PSL_DOMAINS
+        logging.debug("Searching for PSL")
+        psl_file = Path("/usr/share/publicsuffix/public_suffix_list.dat")
 
-            for domain in PSL_DOMAINS:
-                if domain.startswith("*."):
-                    if re.match(
-                        pattern=f"^(.*).{domain.split(sep='.', maxsplit=1)[1]}$",
-                        string=libvirt_net_domain,
-                    ):
-                        logging.error(
-                            "Network domain {libvirt_net_domain} "
-                            "cannot be used, as it matches patten in the PSL list"
-                        )
-                        return
-                elif domain == libvirt_net_domain:
+        psl_suffix_list = []
+        if psl_file.exists() and psl_file.is_file():
+            logging.info(f"Found PSL suffix data - {psl_file}")
+            try:
+                with open(psl_file, "rt") as f:
+                    for line in f:
+                        if (
+                            not line.strip().startswith("#")
+                            and not line.strip().startswith("//")
+                            and not line.isspace()
+                        ):
+                            logging.debug(
+                                f"Including suffix in disalowed list - {line.strip()}"
+                            )
+                            psl_suffix_list.append(line.strip())
+            except IOError:
+                logging.error(f"Failed to open - {psl_file}")
+
+        else:
+            logging.warning(f"File not found - {psl_file}")
+
+        # Check against known tlds via ps_list
+        for domain in psl_suffix_list:
+            if domain.startswith("*."):
+                if re.match(
+                    pattern=f"^(.*).{domain.split(sep='.', maxsplit=1)[1]}$",
+                    string=libvirt_net_domain,
+                ):
                     logging.error(
                         "Network domain {libvirt_net_domain} "
-                        "cannot be used, as it is in the PSL list"
+                        "cannot be used, as it matches patten in the PSL list"
                     )
                     return
-            else:
-                logging.info(f"Domain {libvirt_net_domain} not in PSL list")
-
-        except ImportError:
-            logging.warning("PSL filtering is not available, PSL checks are disabled")
+            elif domain == libvirt_net_domain:
+                logging.error(
+                    "Network domain {libvirt_net_domain} "
+                    "cannot be used, as it is in the PSL list"
+                )
+                return
+        else:
+            logging.info(f"Network Domain {libvirt_net_domain} not in PSL list")
 
     except (KeyError, AttributeError):
         logging.warning(
@@ -244,7 +282,9 @@ def run(network: str = None, operation: str = None, sub_op: str = "-"):
         )
         return
 
-    if not str.strip(libvirt_net_bridge_interface) or not str.strip(libvirt_net_gw_ip):
+    if not str.strip(libvirt_net_bridge_interface) or not str.strip(
+        libvirt_net_gw_ip
+    ):
         raise LibVirtHookError(f"Network {network} has no dns or bridge")
 
     # Setup

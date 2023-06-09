@@ -1,8 +1,6 @@
 SHELL := /bin/bash
 .DEFAULT_GOAL := help
 
-export REPO_ROOT := $(shell dirname $(realpath $(lastword $(MAKEFILE_LIST))))
-
 .PHONY: help
 help: ### This help message
 	@printf "%-20s %s\n" "Target" "Help"
@@ -10,7 +8,5 @@ help: ### This help message
 
 .PHONY: install
 install: ### Install hooks (Requires Root)
-	@echo "Installing Hooks"
-	@if [[ ! -e /etc/libvirt/hooks/network.d ]]; then mkdir /etc/libvirt/hooks/network.d; fi
-	install -g root -o root -m 644 psldata.py /etc/libvirt/hooks/network.d/psldata.py
+	@if [[ ! -e /etc/libvirt/hooks/network.d ]]; then install -g root -o root -m 755 /etc/libvirt/hooks/network.d; fi
 	install -g root -o root -m 755 systemd-resolved-dns /etc/libvirt/hooks/network.d/systemd-resolved-dns
