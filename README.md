@@ -1,5 +1,13 @@
 <!-- markdownlint-disable MD033 -->
 
+# A fork of the libvirt-systemd-resolved
+
+This repo provides a Python executable that configures systemd-resolved
+dynamically based on libvirt network status.  It is based on the original repo
+at https://github.com/tprasadtp/libvirt-systemd-resolved by Prasad Tengse.
+
+The following content is a verbatim copy of the original README.
+
 # libvirt-systemd-resolved
 
 Libvirt hooks for setting up DNS with systemd resolved.
