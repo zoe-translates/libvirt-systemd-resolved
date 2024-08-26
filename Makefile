@@ -8,5 +8,5 @@ help: ### This help message
 
 .PHONY: install
 install: ### Install hooks (Requires Root)
-	@if [[ ! -e /etc/libvirt/hooks/network.d ]]; then install -g root -o root -m 755 /etc/libvirt/hooks/network.d; fi
+	@if [[ ! -d /etc/libvirt/hooks/network.d ]]; then mkdir -p /etc/libvirt/hooks/network.d; fi
 	install -g root -o root -m 755 systemd-resolved-dns /etc/libvirt/hooks/network.d/systemd-resolved-dns

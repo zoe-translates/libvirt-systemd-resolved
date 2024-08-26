@@ -309,19 +309,36 @@ def run(network: str = None, operation: str = None, sub_op: str = "-"):
             )
 
         logging.info(
-            f"Set RoutingDomain=~{libvirt_net_domain} "
+            f"Set Domains={libvirt_net_domain} "
             f"on Interface={libvirt_net_bridge_interface}"
         )
         try:
             run_resolvectl_hook(
                 subcommand="domain",
                 interface=libvirt_net_bridge_interface,
-                value=f"~{libvirt_net_domain}",
+                value=f"{libvirt_net_domain}",
             )
         except (LibVirtHookResolvectlError, ValueError) as e:
             logging.error(str(e))
             logging.error(
-                f"Failed to set RoutingDomain=~{libvirt_net_domain} "
+                f"Failed to set Domains={libvirt_net_domain} "
+                f"on Interface={libvirt_net_bridge_interface}"
+            )
+
+        logging.info(
+            f"Set DefaultRoute=no "
+            f"on Interface={libvirt_net_bridge_interface}"
+        )
+        try:
+            run_resolvectl_hook(
+                subcommand="default-route",
+                interface=libvirt_net_bridge_interface,
+                value="no",
+            )
+        except (LibVirtHookResolvectlError, ValueError) as e:
+            logging.error(str(e))
+            logging.error(
+                f"Failed to set DefaultRoute=no "
                 f"on Interface={libvirt_net_bridge_interface}"
             )
     else:
